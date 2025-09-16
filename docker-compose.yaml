@@ -1,0 +1,103 @@
+services:
+  import-excel:
+    image: trangtoan293/load-excel-tandtc:latest
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Jakarta
+      - DATABASE_URL=postgresql+psycopg2://postgres:13072002@172.17.0.1:5432/tatc_ocr
+      - OCR_KATALYST_ENDPOINT=http://172.17.0.1:3000/api/v1/extract
+      - OCR_KATALYST_STATUS_BASE=http://172.17.0.1:3000
+      - LOG_LEVEL=DEBUG
+      - MAX_FILE_SIZE_MB=20
+      - IMPORT_BATCH_SIZE=500
+      - ERRORS_LIMIT=100
+      - PREVIEW_ROWS_LIMIT=50
+      # Scale knobs
+      - WEB_CONCURRENCY=4
+      - GUNICORN_TIMEOUT=120
+      # Queue
+      - REDIS_URL=redis://:NSTsaq0ONf@172.17.0.1:9005/0
+      - RQ_QUEUE=imports
+      # DB pool
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=5
+      - DB_POOL_RECYCLE_SEC=1800
+      - TABLE_HOSO_AN=public."HoSoAn"
+      - TABLE_HOSO_AN_KETQUA1=public."HoSoAnKetQua1"
+      - TABLE_TAPTIN=public."TapTin"
+      - ASSIGNEE_CYCLE=NguoiTaoID,ocr-katalyst
+      - OCR_POLL_WORKER_ENABLED=false    
+    ports:
+      - 9090:8000
+    networks:
+      - tatc-ocr
+  nginx:
+    image: nginx
+    restart: always
+    ports:
+      - 443:443
+      - 80:80
+    environment:
+      - TZ=Asia/Jakarta
+    volumes:
+      - ./nginx-default.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - ./certs:/etc/nginx/certs:z
+    networks:
+      - tatc-ocr
+  keycloak:
+    #image: quay.io/keycloak/keycloak:21.1.1
+    image: docker.io/bitnami/keycloak:26.3.0-debian-12-r0
+    restart: unless-stopped
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KC_DB=postgres
+      - KC_DB_URL_HOST=keycloak-db
+      - KC_DB_URL_PORT=5432
+      - KC_DB_USERNAME=postgres
+      - KC_DB_PASSWORD=13072002
+      - BITNAMI_DEBUG=false
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      - KC_CACHE_CONFIG_FILE=cache-ispn.xml
+      - KC_CACHE_TYPE=ispn
+      - KEYCLOAK_DATABASE_HOST=keycloak-db
+      - KEYCLOAK_DATABASE_PORT=5432
+      - KEYCLOAK_DATABASE_PASSWORD=13072002
+      - KEYCLOAK_DATABASE_USER=postgres
+      - KEYCLOAK_DATABASE_NAME=keycloak
+      - KEYCLOAK_HTTP_RELATIVE_PATH=/
+      - HOSTNAME=sohoahoso.toaan.gov.vn
+      - KEYCLOAK_HOSTNAME=https://sohoahoso.toaan.gov.vn
+      - KEYCLOAK_HOSTNAME_ADMIN=https://sohoahoso.toaan.gov.vn
+      - KEYCLOAK_PRODUCTION=true
+      - KEYCLOAK_LOG_OUTPUT=default
+      - KEYCLOAK_LOG_LEVEL=INFO
+      - KEYCLOAK_HTTP_PORT=8080
+      - KEYCLOAK_HOSTNAME_STRICT=false
+      - KEYCLOAK_PROXY_HEADERS=xforwarded
+      - KC_SPI_ADMIN_REALM=master
+      - TZ=Asia/Jakarta
+    #command: start-dev
+    ports:
+      - 30080:8080
+    depends_on:
+      - keycloak-db
+    networks:
+      - tatc-ocr
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Jakarta
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=13072002
+    volumes:
+      - ./volumes/keycloak-db:/var/lib/postgresql/data
+    networks:
+      - tatc-ocr
+
+networks:
+  tatc-ocr:
