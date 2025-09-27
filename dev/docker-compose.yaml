@@ -1,0 +1,304 @@
+services:
+  import-excel:
+    image: 192.168.1.41/tatc/load-excel-tandtc:latest
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Jakarta
+      - DATABASE_URL=postgresql+psycopg2://postgres:13072002@192.168.1.115:5432/tatc_ocr
+      - OCR_KATALYST_ENDPOINT=http://172.17.0.1:3000/api/v1/extract
+      - OCR_KATALYST_STATUS_BASE=http://172.17.0.1:3000
+      - LOG_LEVEL=DEBUG
+      - MAX_FILE_SIZE_MB=20
+      - IMPORT_BATCH_SIZE=500
+      - ERRORS_LIMIT=100
+      - PREVIEW_ROWS_LIMIT=50
+      # Scale knobs
+      - WEB_CONCURRENCY=4
+      - GUNICORN_TIMEOUT=120
+      # Queue
+      - REDIS_URL=redis://:NSTsaq0ONf@redis:6379/0
+      - RQ_QUEUE=imports
+      # DB pool
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=5
+      - DB_POOL_RECYCLE_SEC=1800
+      - TABLE_HOSO_AN=public."HoSoAn"
+      - TABLE_HOSO_AN_KETQUA1=public."HoSoAnKetQua1"
+      - TABLE_TAPTIN=public."TapTin"
+      - ASSIGNEE_CYCLE=NguoiTaoID,NguoiTaoID,NguoiTaoID,ocr-katalyst
+      - ASSIGNMENT_WORKER_ENABLED=true
+# Assignment UI defaults (used when no Redis config set)
+      - ASSIGNMENT_DEFAULT_MODE=weighted
+      - ASSIGNMENT_DEFAULT_CYCLE=NguoiTaoID,ocr-katalyst
+      - ASSIGNMENT_DEFAULT_RATIOS=70,30
+      - ASSIGNMENT_DEFAULT_SLEEP_SECONDS=15
+      - ASSIGNMENT_DEFAULT_WEIGHTED_SCOPE=per_creator
+      - OCR_POLL_WORKER_ENABLED=false
+      - OCR_PARSED_DB_WRITE_ENABLED=true
+      - TEMPLATES_DIR=/app/data/templates
+      - UPLOAD_DIR=/app/data/uploads
+    volumes:
+      - /data/excel-templates:/app/data/templates
+      - /data/excel-uploads:/app/data/uploads
+    ports:
+      - 9090:8000
+    networks:
+      - tatc-ocr
+
+  import-worker:
+    image: 192.168.1.41/tatc/load-excel-tandtc:latest
+    environment:
+      - DATABASE_URL=postgresql+psycopg2://postgres:13072002@192.168.1.115:5432/tatc_ocr
+      - REDIS_URL=redis://:NSTsaq0ONf@redis:6379/0
+      - RQ_QUEUE=imports
+      - UPLOAD_DIR=/app/data/uploads
+    # Use $$ to escape compose-time expansion so shell expands inside container
+    command: ["/bin/sh", "-c", "rq worker -u $${REDIS_URL} $${RQ_QUEUE}"]
+    volumes:
+      - /data/excel-uploads:/app/data/uploads
+    networks:
+      - tatc-ocr
+  redis:
+    image: redis:7-alpine
+    command: redis-server --requirepass NSTsaq0ONf --maxmemory 4gb --maxmemory-policy allkeys-lru --maxclients 10000
+    volumes:
+      - /data/redis:/data
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "NSTsaq0ONf", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    networks:
+      - tatc-ocr
+  nginx:
+    image: nginx
+    restart: always
+    ports:
+      - 443:443
+      - 80:80
+    environment:
+      - TZ=Asia/Jakarta
+    volumes:
+      - ./nginx-default.conf:/etc/nginx/conf.d/default.conf
+      - ./nginx.conf:/etc/nginx/nginx.conf
+      - /data/nginx:/var/log/nginx
+    networks:
+      - tatc-ocr
+  keycloak:
+    #image: quay.io/keycloak/keycloak:21.1.1
+    image: docker.io/bitnamilegacy/keycloak:26.3.0-debian-12-r0
+    restart: unless-stopped
+    environment:
+      - KEYCLOAK_ADMIN=admin
+      - KEYCLOAK_ADMIN_PASSWORD=admin
+      - KC_DB=postgres
+      - KC_DB_URL_HOST=keycloak-db
+      - KC_DB_URL_PORT=5432
+      - KC_DB_USERNAME=postgres
+      - KC_DB_PASSWORD=13072002
+      - BITNAMI_DEBUG=false
+      - KC_BOOTSTRAP_ADMIN_USERNAME=admin
+      - KC_BOOTSTRAP_ADMIN_PASSWORD=admin
+      - KC_CACHE_CONFIG_FILE=cache-ispn.xml
+      - KC_CACHE_TYPE=ispn
+      - KEYCLOAK_DATABASE_HOST=keycloak-db
+      - KEYCLOAK_DATABASE_PORT=5432
+      - KEYCLOAK_DATABASE_PASSWORD=13072002
+      - KEYCLOAK_DATABASE_USER=postgres
+      - KEYCLOAK_DATABASE_NAME=keycloak
+      - KEYCLOAK_HTTP_RELATIVE_PATH=/
+      - HOSTNAME=sohoahoso.hanas.io
+      - KEYCLOAK_HOSTNAME=https://sohoahoso.hanas.io
+      - KEYCLOAK_HOSTNAME_ADMIN=https://sohoahoso.hanas.io
+      - KEYCLOAK_PRODUCTION=true
+      - KEYCLOAK_LOG_OUTPUT=default
+      - KEYCLOAK_LOG_LEVEL=INFO
+      - KEYCLOAK_HTTP_PORT=8080
+      - KEYCLOAK_HOSTNAME_STRICT=false
+      - KEYCLOAK_PROXY_HEADERS=xforwarded
+      - KC_SPI_ADMIN_REALM=master
+      - TZ=Asia/Jakarta
+    #command: start-dev
+    ports:
+      - 30080:8080
+    volumes:
+      - /data/keycloak-theme:/opt/bitnami/keycloak/themes
+    depends_on:
+      - keycloak-db
+    networks:
+      - tatc-ocr
+  keycloak-db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      - TZ=Asia/Jakarta
+      - POSTGRES_DB=keycloak
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=13072002
+    volumes:
+      - /data/keycloak-db:/var/lib/postgresql/data
+    networks:
+      - tatc-ocr
+
+  ocr-backend:
+    image: 192.168.1.41/tatc/ocr:tatc
+    container_name: ocr-tatc-backend
+    restart: unless-stopped
+    environment:
+      # Application Configuration
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8080
+      SPRING_APPLICATION_NAME: bpmn-backend
+
+      # Database Configuration - Connect to external PostgreSQL
+      SPRING_DATASOURCE_PRIMARY_URL: jdbc:postgresql://192.168.1.115:5432/tatc_ocr
+      SPRING_DATASOURCE_PRIMARY_USERNAME: postgres
+      SPRING_DATASOURCE_PRIMARY_PASSWORD: 13072002
+
+      # JPA Configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_SHOW_SQL: false
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: false
+      SPRING_JPA_PROPERTIES_HIBERNATE_DIALECT: org.hibernate.dialect.PostgreSQLDialect
+
+      # Connection Pool
+      #SPRING_DATASOURCE_PRIMARY_HIKARI_CONNECTION_TIMEOUT: 20000
+      #SPRING_DATASOURCE_PRIMARY_HIKARI_MAXIMUM_POOL_SIZE: 20
+      #SPRING_DATASOURCE_PRIMARY_HIKARI_MINIMUM_IDLE: 5
+      #SPRING_DATASOURCE_PRIMARY_HIKARI_IDLE_TIMEOUT: 300000
+      #SPRING_DATASOURCE_PRIMARY_HIKARI_MAX_LIFETIME: 600000
+
+      # Logging Configuration
+      LOGGING_LEVEL_COM_BPMN_BPMN: INFO
+      LOGGING_LEVEL_ORG_SPRINGFRAMEWORK_WEB: WARN
+      LOGGING_LEVEL_ORG_HIBERNATE_SQL: WARN
+      LOGGING_LEVEL_ROOT: INFO
+
+      # Swagger/OpenAPI
+      SPRINGDOC_API_DOCS_PATH: /api-docs
+      SPRINGDOC_SWAGGER_UI_PATH: /swagger-ui.html
+      SPRINGDOC_SWAGGER_UI_OPERATIONSSORTER: method
+
+      # Actuator for Health Checks
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      MANAGEMENT_ENDPOINT_HEALTH_SHOW_DETAILS: when-authorized
+
+      # External Services Configuration (if needed)
+      DREMIO_DATASOURCE_URL:
+      DREMIO_DATASOURCE_USERNAME:
+      DREMIO_DATASOURCE_PASSWORD:
+      DREMIO_DATASOURCE_DRIVER_CLASS_NAME:
+
+      # Seafile Configuration (if needed)
+      SEAFILE_SERVER_URL: https://filesohoa.hanas.io
+      SEAFILE_USERNAME: admin@hanas.io
+      SEAFILE_PASSWORD: Admin@123
+      SEAFILE_DEFAULT_REPO_ID: eb8cd588-b136-4793-b4f0-3c9fb8437450
+      SEAFILE_LIBRARY_BASE_URL: https://filesohoa.hanas.io/library/
+      SEAFILE_LIB_FILE_BASE_URL: https://filesohoa.hanas.io/lib/
+
+      # CORS Configuration
+      SPRING_WEB_CORS_ALLOWED_ORIGINS: "*"
+      SPRING_WEB_CORS_ALLOWED_METHODS: "GET,POST,PUT,DELETE,OPTIONS"
+      SPRING_WEB_CORS_ALLOWED_HEADERS: "*"
+
+      # Static Content Configuration
+      SPRING_WEB_RESOURCES_STATIC_LOCATIONS: classpath:/static/
+      SPRING_WEB_RESOURCES_ADD_MAPPINGS: true
+      SPRING_MVC_STATIC_PATH_PATTERN: /**
+    ports:
+      - "8088:8080"
+    networks:
+      - tatc-ocr
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 90s
+
+  # OCR Reconcile Backend Service
+  ocr-reconcile:
+    image: 192.168.1.41/tatc/ocr-reconcile:tatc
+    container_name: ocr-reconcile-backend
+    restart: unless-stopped
+    environment:
+      # Application Configuration
+      SPRING_PROFILES_ACTIVE: docker
+      SERVER_PORT: 8081
+      SPRING_APPLICATION_NAME: ocr-backend
+
+      # Database Configuration - Connect to external PostgreSQL
+      SPRING_DATASOURCE_URL: jdbc:postgresql://192.168.1.115:5432/tatc_ocr_result
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: 13072002
+
+      # JPA Configuration
+      SPRING_JPA_HIBERNATE_DDL_AUTO: update
+      SPRING_JPA_DATABASE_PLATFORM: org.hibernate.dialect.PostgreSQLDialect
+      SPRING_JPA_SHOW_SQL: false
+      SPRING_JPA_PROPERTIES_HIBERNATE_FORMAT_SQL: false
+      SPRING_JPA_PROPERTIES_HIBERNATE_JDBC_LOB_NON_CONTEXTUAL_CREATION: true
+
+      # HikariCP Configuration
+      #SPRING_DATASOURCE_HIKARI_CONNECTION_TIMEOUT: 20000
+      #SPRING_DATASOURCE_HIKARI_MAXIMUM_POOL_SIZE: 10
+      #SPRING_DATASOURCE_HIKARI_MINIMUM_IDLE: 5
+
+      # Static Content Configuration
+      SPRING_WEB_RESOURCES_STATIC_LOCATIONS: classpath:/static/
+      SPRING_WEB_RESOURCES_ADD_MAPPINGS: true
+      SPRING_MVC_STATIC_PATH_PATTERN: /**
+
+    ports:
+      - "8081:8081"
+    networks:
+      - tatc-ocr
+    healthcheck:
+      test: ["CMD", "wget", "--no-verbose", "--tries=1", "--spider", "http://localhost:8081/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 60s
+  db-tatc:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tatc_ocr
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 13072002
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - /data/postgres/db-tatc:/var/lib/postgresql/data
+    networks:
+      - tatc-ocr
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tatc_ocr"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+  db-reconcile:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: tatc_ocr_result
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: 13072002
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - /data/postgres/db-reconcile:/var/lib/postgresql/data
+    networks:
+      - tatc-ocr
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d tatc_ocr_result"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+networks:
+  tatc-ocr:
